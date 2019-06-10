@@ -7,6 +7,10 @@
 #include "credentials.h"
 //const char* ssid     = "xxxx";
 //const char* password = "xxxx";
+IPAddress staticIP(192, 168, 1, 70);
+IPAddress gateway(192, 168, 1, 250);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress dns(8, 8, 8, 8);  //DNS
 //================================================================
 // Neon REST Service
 #include "RestClient.h"
@@ -26,7 +30,7 @@ const char* getSessionPath = "/NeonRESTService.svc/PostSession";
 #include <WiFiUdp.h>
 #include <TimeLib.h>
 #include <ESP8266WiFi.h>
-static const char ntpServerName[] = "time.nist.gov";
+static const char ntpServerName[] = "192.168.1.130";
 const int timeZone = 0;     // UTC
 const unsigned int localPort = 8888;  // local port to listen for UDP packets
 const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
@@ -35,6 +39,13 @@ byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
 const int analogSamples = 50;
 String mDepth = "";
 int wakeInterval = 900;     //15 minutes
+
+int FLASH_START = 1;
+int FLASH_CONNECTED = 2;
+int FLASH_NTP = 3;
+int FLASH_NEON = 4;
+
+//================================================================
 
 void setup() {
   Serial.begin(115200);
@@ -48,43 +59,79 @@ void setup() {
   Serial.println("Running Deep Sleep Firmware!");
   Serial.println("-------------------------------------");
 
+  pinMode(D1, OUTPUT);
+  pinMode(D2, OUTPUT);
+
+  flashStatus(FLASH_START);
+
   readDepth();
 
-  connect();
+  delay(1000);
 
-  // Time is zero on startup
-  time_t t;
-  for (int retry = 0; retry < 3; retry++) {
-    Serial.println("Contacting NTP server");
-    t = getNtpTime();
-    if (t != 0) {
-      break;
-    }
-    Serial.println("Failed, retrying");
-  }
 
-  if (t == 0)
+  int secIntoHour = 0;
+  int secDiff = 0;
+
+  if (!connect())
   {
-    Serial.println("Failed to get time from NTP server");
+    flashExit();
+    Serial.println("No Wifi, sleeping for 5 minutes");
+    ESP.deepSleep(300 * 1000000);
+    return;
   }
   else
   {
-    setTime(t);
-    Serial.print("Time from NTP server: ");
-    Serial.println(getISO8601Time(false));
-    // Test the minute so that we don't send on startup
-    if ((minute() % (wakeInterval / 60)) == 0)
+    flashStatus(FLASH_CONNECTED);
+    // Time is zero on startup
+    time_t t;
+    for (int retry = 0; retry < 5; retry++) {
+      Serial.println("Contacting NTP server");
+      t = getNtpTime();
+      if (t != 0) {
+        break;
+      }
+      Serial.println("Failed, retrying");
+    }
+
+    if (t == 0)
     {
-      pushToNeon();
+      Serial.println("No NTP, sleeping for 5 minutes");
+      ESP.deepSleep(300 * 1000000);
+      flashExit();
+      return;
     }
     else
     {
-      Serial.println("Not time to push data to Neon yet");
+      setTime(t);
+      Serial.print("Time from NTP server: ");
+      Serial.println(getISO8601Time(false));
+      flashStatus(FLASH_NTP);
+      // Test the minute so that we don't send on startup
+      secIntoHour = minute() * 60 + second();
+      secDiff = secIntoHour  % wakeInterval;
+      if (secDiff > (wakeInterval - 5) || secDiff < 30)
+      {
+        if (pushToNeon())
+        {
+          flashStatus(FLASH_NEON);
+        }
+        else
+        {
+          flashExit();
+        }
+      }
+      else
+      {
+        delay(1000);
+        flashExit();
+        Serial.println("Not time to push data to Neon yet");
+      }
     }
   }
+  Serial.println(getISO8601Time(false));
   // Calculate how many microseconds to wait until waking up on the interval
-  int secIntoHour = minute() * 60 + second();
-  int secDiff = secIntoHour  % wakeInterval;
+  secIntoHour = minute() * 60 + second();
+  secDiff = secIntoHour  % wakeInterval;
   long sleepTime = (wakeInterval -  secDiff) * 1000000;
   Serial.print("Sleeping for ");
   Serial.print(sleepTime);
@@ -92,7 +139,7 @@ void setup() {
   ESP.deepSleep(sleepTime);
 }
 
-void connect() {
+bool connect() {
 
   // Connect to Wifi.
   Serial.println();
@@ -100,13 +147,16 @@ void connect() {
   Serial.print("Connecting to ");
   Serial.println(ssid);
 
-  WiFi.begin(ssid, password);
-
-  // WiFi fix: https://github.com/esp8266/Arduino/issues/2186
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_OFF);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+  //WiFi.config(staticIP, gateway, subnet, dns);
+
+
+  // WiFi fix: https://github.com/esp8266/Arduino/issues/2186
+  //WiFi.persistent(false);
+  //WiFi.mode(WIFI_OFF);
+  //WiFi.mode(WIFI_STA);
+  //WiFi.begin(ssid, password);
 
   unsigned long wifiConnectStart = millis();
 
@@ -122,7 +172,7 @@ void connect() {
     // Only try for 5 seconds.
     if (millis() - wifiConnectStart > 15000) {
       Serial.println("Failed to connect to WiFi");
-      return;
+      return false;
     }
   }
 
@@ -132,10 +182,16 @@ void connect() {
   Serial.println(WiFi.localIP());
   Serial.println();
   Serial.println("Connected!");
+  Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
+  return true;
 }
 
 void readDepth() {
 
+  Serial.println("Power up sensor");
+  digitalWrite(D1, HIGH);     // D1 = GPIO5, ON should turn on 5V regulator
+  delay(1000);                // Wait for sensor to stabilise
+  Serial.println("Read sensor");
   long raw = 0;
   for (int i = 0; i < analogSamples; i++)
   {
@@ -157,11 +213,16 @@ void readDepth() {
   Serial.print("mV,  Depth: ");
   Serial.print(mDepth.c_str());
   Serial.println("m");
+  Serial.println("Power off sensor");
+  digitalWrite(D1, LOW);     // D1 = GPIO5, OFF should turn off 5V regulator
 
 }
 
+
 void loop() {
-  //
+  Serial.println("Reached loop, error state, start deepsleep");
+  ESP.deepSleep(300 * 1000000);
+  return;
 }
 
 //==============================================================================
@@ -177,7 +238,7 @@ time_t getNtpTime()
   WiFi.hostByName(ntpServerName, ntpServerIP);
   sendNTPpacket(ntpServerIP, Udp);
   uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
+  while (millis() - beginWait < 2000) {
     int size = Udp.parsePacket();
     if (size >= NTP_PACKET_SIZE) {
       Udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
@@ -319,24 +380,39 @@ char* getISO8601Time(boolean zeroSeconds)
 }
 
 //=========================================================================
-void pushToNeon()
+bool pushToNeon()
 {
-
   RestClient client = RestClient(neonURL, proxyAddr, proxyPort);  ;
   client.setContentType(contentType);
+  client.setTerminator('}');
   char sessionHeader[70];
+  int httpStatus = 0;
+
   for (int retry = 0; retry < 3; retry++)
   {
-    int httpStatus = getSessionToken(client, sessionHeader);
-    if (httpStatus == 200)
-    {
-      httpStatus = pushData(client, sessionHeader);
+    client.setTimeout(15000);
+    httpStatus = getSessionToken(client, sessionHeader);
+    if (httpStatus == 200)    {
       break;
     }
   }
+  if (httpStatus != 200) {
+    return false;
+  }
+
+  for (int retry = 0; retry < 3; retry++)
+  {
+    client.setTimeout(15000);
+    httpStatus = pushData(client, sessionHeader);
+    if (httpStatus == 200)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
-int getSessionToken(RestClient &client, char* sessionHeader)
+int getSessionToken(RestClient & client, char* sessionHeader)
 {
   DynamicJsonBuffer sendJsonBuffer;
   JsonObject& cred = sendJsonBuffer.createObject();
@@ -361,7 +437,7 @@ int getSessionToken(RestClient &client, char* sessionHeader)
   return statusCode;
 }
 
-int pushData(RestClient &client, char* sessionHeader)
+int pushData(RestClient & client, char* sessionHeader)
 {
   DynamicJsonBuffer jsonBuffer;
 
@@ -385,4 +461,23 @@ int pushData(RestClient &client, char* sessionHeader)
   Serial.print("#ImportData status code = ");
   Serial.println(statusCode);
   return statusCode;
+}
+
+
+void flashStatus(int count)
+{
+  for (int i = 0; i < count; i++)
+  {
+    digitalWrite(D2, HIGH);
+    delay(100);
+    digitalWrite(D2, LOW);
+    delay(200);
+  }
+}
+
+void flashExit()
+{
+  digitalWrite(D2, HIGH);
+  delay(1000);
+  digitalWrite(D2, LOW);
 }

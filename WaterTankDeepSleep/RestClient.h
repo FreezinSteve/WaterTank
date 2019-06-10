@@ -7,7 +7,7 @@
 
 class RestClient {
 
-public:
+  public:
     RestClient(const char* host);
     RestClient(const char* host, const char* proxyAddr, int proxyPort);
     RestClient(const char* _host, int _port);
@@ -29,7 +29,10 @@ public:
     void setContentType(const char*);
     // Set SSL support on(1) or off(0)
     void setSSL(int);
-
+    // Timeout for a transaction
+    void setTimeout(int);
+    // Set a terminator character
+    void setTerminator(char);
     // GET path
     int get(const char*);
     // GET path and response
@@ -59,7 +62,7 @@ public:
     // DELETE path and body and response
     int del(const char*, const char*, String*);
 
-private:
+  private:
     WiFiClient client;
     WiFiClientSecure sslClient;
     int readResponse(String*);
@@ -68,6 +71,8 @@ private:
     const char* proxyAddr;
     int proxyPort;
     int useProxy;
+    int timeout;
+    char terminator;
     int port;
     int num_headers;
     const char* headers[10];

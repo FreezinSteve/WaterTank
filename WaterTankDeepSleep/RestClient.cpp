@@ -9,11 +9,16 @@
 #define HTTP_DEBUG_PRINT(string)
 #endif
 
+const int DEF_TIMEOUT = 30000;
+
 RestClient::RestClient(const char* _host) {
   host = _host;
   port = 80;
   ssl = 0;
   fingerprint = NULL;
+  useProxy = 0;
+  timeout = DEF_TIMEOUT;
+  terminator = NULL;
   num_headers = 0;
   if (!contentType) {
     contentType = "application/x-www-form-urlencoded";  // default
@@ -26,6 +31,8 @@ RestClient::RestClient(const char* _host, const char* _proxyAddr, int _proxyPort
   proxyAddr = _proxyAddr;
   proxyPort = _proxyPort;
   useProxy = 1;
+  timeout = DEF_TIMEOUT;
+  terminator = NULL;
   ssl = 0;
   fingerprint = NULL;
   num_headers = 0;
@@ -40,6 +47,8 @@ RestClient::RestClient(const char* _host, int _port) {
   port = _port;
   ssl = 0;
   useProxy = 0;
+  timeout = DEF_TIMEOUT;
+  terminator = NULL;
   fingerprint = NULL;
   num_headers = 0;
   if (!contentType) {
@@ -47,23 +56,13 @@ RestClient::RestClient(const char* _host, int _port) {
   }
 }
 
-bool RestClient::dhcp() {
-  byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-  if (begin(mac) == 0) {
-    Serial.println("Failed to configure Ethernet using DHCP");
-    return false;
-  }
-
-  //give it time to initialize
-  delay(1000);
-  return true;
-}
-
 RestClient::RestClient(const char* _host, int _port, const char* _fingerprint) {
   host = _host;
   port = _port;
   ssl = 1;
   useProxy = 0;
+  timeout = DEF_TIMEOUT;
+  terminator = NULL;
   fingerprint = _fingerprint;
   num_headers = 0;
   if (!contentType) {
@@ -76,11 +75,26 @@ RestClient::RestClient(const char* _host, int _port, int _ssl) {
   port = _port;
   ssl = (_ssl) ? 1 : 0;
   useProxy = 0;
+  timeout = DEF_TIMEOUT;
+  terminator = NULL;
   fingerprint = NULL;
   num_headers = 0;
   if (!contentType) {
     contentType = "application/x-www-form-urlencoded";  // default
   }
+}
+
+
+bool RestClient::dhcp() {
+  byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+  if (begin(mac) == 0) {
+    Serial.println("Failed to configure Ethernet using DHCP");
+    return false;
+  }
+
+  //give it time to initialize
+  delay(1000);
+  return true;
 }
 
 // GET path
@@ -165,6 +179,14 @@ void RestClient::setContentType(const char* contentTypeValue) {
   contentType = contentTypeValue;
 }
 
+void RestClient::setTimeout(int _timeout) {
+  timeout = _timeout;
+}
+
+void RestClient::setTerminator(char _term) {
+  terminator = _term;
+}
+
 void RestClient::setSSL(int _ssl) {
   ssl = (_ssl) ? 1 : 0;
 }
@@ -203,7 +225,7 @@ int RestClient::request(const char* method, const char* path,
       if (!client.connect(proxyAddr, proxyPort)) {
         HTTP_DEBUG_PRINT("HTTP Connection failed\n");
         return 0;
-      }      
+      }
     }
   }
 
@@ -228,7 +250,8 @@ int RestClient::request(const char* method, const char* path,
 
   if (body != NULL) {
     request += String(body);
-    request += "\r\n\r\n";
+    //TODO: Pretty sure you don't need these
+    //request += "\r\n\r\n";
   }
 
   write(request.c_str());
@@ -256,6 +279,7 @@ int RestClient::request(const char* method, const char* path,
 
 }
 
+//TODO: Should check for content-length header
 int RestClient::readResponse(String* response) {
 
   // an http request ends with a blank line
@@ -322,15 +346,29 @@ int RestClient::readResponse(String* response) {
     }
     HTTP_DEBUG_PRINT("HTTPS client closed \n");
   } else {
-    while (client.connected()) {
-      HTTP_DEBUG_PRINT(".");
-
+    long endTime = millis() + timeout;
+    int cnt = 0;
+    while (client.connected()) {      
+      cnt++;
+      if (cnt % 100 == 0) {
+        HTTP_DEBUG_PRINT(".");
+        yield();
+      }
+      else if (cnt>10000)
+      {
+        HTTP_DEBUG_PRINT("\r\n");
+        cnt = 0;
+      }
+      if (timeout > 0 && millis() > endTime)
+      {
+        HTTP_DEBUG_PRINT("\r\n!!!TIMEOUT!!!\r\n");
+        break;
+      }
       if (client.available()) {
         HTTP_DEBUG_PRINT(",");
 
         char c = client.read();
         HTTP_DEBUG_PRINT(c);
-
         if (c == ' ' && !inStatus) {
           inStatus = true;
         }
@@ -361,6 +399,13 @@ int RestClient::readResponse(String* response) {
           else if (c != '\r') {
             // you've gotten a character on the current line
             currentLineIsBlank = false;
+          }
+        }
+        if (terminator != NULL)
+        {
+          if (c == terminator) {
+            HTTP_DEBUG_PRINT("\r\nTerminator Received\r\n");
+            break;
           }
         }
       }

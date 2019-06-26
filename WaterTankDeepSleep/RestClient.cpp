@@ -179,6 +179,11 @@ void RestClient::setContentType(const char* contentTypeValue) {
   contentType = contentTypeValue;
 }
 
+void RestClient::setConnectionHeader(const char* header)
+{
+  connectionHeader = header;  
+}
+
 void RestClient::setTimeout(int _timeout) {
   timeout = _timeout;
 }
@@ -238,7 +243,15 @@ int RestClient::request(const char* method, const char* path,
     request += String(headers[i]) + "\r\n";
   }
   request += "Host: " + String(host) +  ":" + String(port) + "\r\n";
-  request += "Connection: close\r\n";
+  if (connectionHeader !=NULL)
+  {
+    request += "Connection: " + String(connectionHeader) + "\r\n";
+  }
+  else
+  {
+    request += "Connection: close\r\n";  
+  }
+  
   if (body != NULL) {
     char contentLength[30];
     sprintf(contentLength, "Content-Length: %d\r\n", strlen(body));

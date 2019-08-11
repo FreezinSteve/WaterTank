@@ -149,14 +149,6 @@ bool connect() {
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  //WiFi.config(staticIP, gateway, subnet, dns);
-
-
-  // WiFi fix: https://github.com/esp8266/Arduino/issues/2186
-  //WiFi.persistent(false);
-  //WiFi.mode(WIFI_OFF);
-  //WiFi.mode(WIFI_STA);
-  //WiFi.begin(ssid, password);
 
   unsigned long wifiConnectStart = millis();
 
@@ -197,15 +189,14 @@ void readDepth() {
   {
     raw += analogRead(A0);
   }
-  float volts = raw / analogSamples;
+  int volts = raw / analogSamples;
 
   // To scale to mm of water
-  // 1 psi = 703.07mm
-  // sensor = 0 psi = 500mV, 15psi = 4500mV (ignore overrange of sensor)
-  // ESP8266 0-1024 = 0 to 3300mV
-  // m = 8.497
-  // c = 1318
-  int depth = (int)(volts * 8.497  - 1318 );
+  // 4-20mA = 0-5000mm via 150R resistor
+  // 600-3000mV = 0-5000mm
+  // 186-931 bits
+  int depth = map(volts, 186, 931, 0, 5000);
+  depth = depth + 100;    // Empirical offset
   mDepth = String((float)depth / 1000);
   //  DEBUG("Volts: %.2f,  Depth: %s m\n", volts, mDepth.c_str());
   Serial.print("A0: ");

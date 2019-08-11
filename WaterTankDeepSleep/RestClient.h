@@ -27,8 +27,6 @@ class RestClient {
     void setHeader(const char*);
     // Set Content-Type Header
     void setContentType(const char*);
-    // Set connection header option 'close' or 'keep-alive'
-    void setConnectionHeader(const char*);
     // Set SSL support on(1) or off(0)
     void setSSL(int);
     // Timeout for a transaction
@@ -79,7 +77,6 @@ class RestClient {
     int num_headers;
     const char* headers[10];
     const char* contentType;
-    const char* connectionHeader;
     const char* fingerprint;
     int ssl;
 };

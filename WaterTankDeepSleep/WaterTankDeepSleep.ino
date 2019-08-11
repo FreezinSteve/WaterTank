@@ -38,15 +38,12 @@ byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
 //================================================================
 const int analogSamples = 50;
 String mDepth = "";
-float rawDepth = 0;
-float corrDepth = 0;
 int wakeInterval = 900;     //15 minutes
 
 int FLASH_START = 1;
 int FLASH_CONNECTED = 2;
-int FLASH_BPCORR = 3;
-int FLASH_NTP = 4;
-int FLASH_NEON = 5;
+int FLASH_NTP = 3;
+int FLASH_NEON = 4;
 
 //================================================================
 
@@ -71,6 +68,7 @@ void setup() {
 
   delay(1000);
 
+
   int secIntoHour = 0;
   int secDiff = 0;
 
@@ -81,61 +79,55 @@ void setup() {
     ESP.deepSleep(300 * 1000000);
     return;
   }
-
-  flashStatus(FLASH_CONNECTED);
-
-  float correction = getBpCorrection();
-  flashStatus(FLASH_BPCORR);
-  
-  corrDepth = rawDepth - correction;  
-  mDepth = String(corrDepth);
-  Serial.print("Corrected depth = ");
-  Serial.println(mDepth);
-  
-
-  // Time is zero on startup
-  time_t t;
-  for (int retry = 0; retry < 5; retry++) {
-    Serial.println("Contacting NTP server");
-    t = getNtpTime();
-    if (t != 0) {
-      break;
+  else
+  {
+    flashStatus(FLASH_CONNECTED);
+    // Time is zero on startup
+    time_t t;
+    for (int retry = 0; retry < 5; retry++) {
+      Serial.println("Contacting NTP server");
+      t = getNtpTime();
+      if (t != 0) {
+        break;
+      }
+      Serial.println("Failed, retrying");
     }
-    Serial.println("Failed, retrying");
-  }
-  if (t == 0)
-  {
-    Serial.println("No NTP, sleeping for 5 minutes");
-    ESP.deepSleep(300 * 1000000);
-    flashExit();
-    return;
-  }
 
-  setTime(t);
-  Serial.print("Time from NTP server: ");
-  Serial.println(getISO8601Time(false));
-  flashStatus(FLASH_NTP);
-  // Test the minute so that we don't send on startup
-  secIntoHour = minute() * 60 + second();
-  secDiff = secIntoHour  % wakeInterval;
-  if (secDiff > (wakeInterval - 5) || secDiff < 30)
-  {
-    if (pushToNeon())
+    if (t == 0)
     {
-      flashStatus(FLASH_NEON);
+      Serial.println("No NTP, sleeping for 5 minutes");
+      ESP.deepSleep(300 * 1000000);
+      flashExit();
+      return;
     }
     else
     {
-      flashExit();
+      setTime(t);
+      Serial.print("Time from NTP server: ");
+      Serial.println(getISO8601Time(false));
+      flashStatus(FLASH_NTP);
+      // Test the minute so that we don't send on startup
+      secIntoHour = minute() * 60 + second();
+      secDiff = secIntoHour  % wakeInterval;
+      if (secDiff > (wakeInterval - 5) || secDiff < 30)
+      {
+        if (pushToNeon())
+        {
+          flashStatus(FLASH_NEON);
+        }
+        else
+        {
+          flashExit();
+        }
+      }
+      else
+      {
+        delay(1000);
+        flashExit();
+        Serial.println("Not time to push data to Neon yet");
+      }
     }
   }
-  else
-  {
-    delay(1000);
-    flashExit();
-    Serial.println("Not time to push data to Neon yet");
-  }
-
   Serial.println(getISO8601Time(false));
   // Calculate how many microseconds to wait until waking up on the interval
   secIntoHour = minute() * 60 + second();
@@ -157,6 +149,14 @@ bool connect() {
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+  //WiFi.config(staticIP, gateway, subnet, dns);
+
+
+  // WiFi fix: https://github.com/esp8266/Arduino/issues/2186
+  //WiFi.persistent(false);
+  //WiFi.mode(WIFI_OFF);
+  //WiFi.mode(WIFI_STA);
+  //WiFi.begin(ssid, password);
 
   unsigned long wifiConnectStart = millis();
 
@@ -206,12 +206,12 @@ void readDepth() {
   // m = 8.497
   // c = 1318
   int depth = (int)(volts * 8.497  - 1318 );
-  rawDepth = (float)depth / 1000;
-
+  mDepth = String((float)depth / 1000);
+  //  DEBUG("Volts: %.2f,  Depth: %s m\n", volts, mDepth.c_str());
   Serial.print("A0: ");
   Serial.print(volts);
   Serial.print("mV,  Depth: ");
-  Serial.print(rawDepth);
+  Serial.print(mDepth.c_str());
   Serial.println("m");
   Serial.println("Power off sensor");
   digitalWrite(D1, LOW);     // D1 = GPIO5, OFF should turn off 5V regulator
@@ -480,26 +480,4 @@ void flashExit()
   digitalWrite(D2, HIGH);
   delay(1000);
   digitalWrite(D2, LOW);
-}
-
-float getBpCorrection()
-{ 
-  RestClient client = RestClient("192.168.1.130",80);  
-  client.setTimeout(500);
-  client.setTerminator('!');
-  client.setConnectionHeader("keep-alive");
-  String response;
-  int statusCode = client.get("/bpcorr.txt", &response);
-  if (statusCode == 200)
-  {
-    Serial.print("BP Correction response=");
-    Serial.println(response);
-    return response.toFloat();
-  }
-  else
-  {
-    Serial.print("BP Correction err = ");
-    Serial.println(statusCode);
-    return 0;
-  }
 }
